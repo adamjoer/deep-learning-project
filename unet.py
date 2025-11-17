@@ -15,10 +15,11 @@ INPUT_CHANNELS = 3
 ATTENTION_EVERYWHERE = False
 GAMMA_MIN = 13.3
 GAMMA_MAX = 5
+N_BLOCKS = 32
 
 # Create U-net model
 class UNet(nn.Module):
-    def __init__(self, cfg):
+    def __init__(self):
         super().__init__()
         attention_parameters = dict(
             n_heads=N_ATTENTION_HEADS,
@@ -46,7 +47,7 @@ class UNet(nn.Module):
                 resnet_block=ResnetBlock(**resnet_parameters),
                 attention_block=AttentionBlock(**attention_parameters) if ATTENTION_EVERYWHERE else None
             )
-            for _ in range(cfg.n_blocks)
+            for _ in range(N_BLOCKS)
         )
 
         self.mid_resnet_block_1 = ResnetBlock(**resnet_parameters)
@@ -59,7 +60,7 @@ class UNet(nn.Module):
                 resnet_block=ResnetBlock(**resnet_parameters),
                 attention_block=AttentionBlock(**attention_parameters) if ATTENTION_EVERYWHERE else None,
             )
-            for _ in range(cfg.n_blocks + 1)
+            for _ in range(N_BLOCKS + 1)
         )
         self.output_conv = nn.Sequential(
             nn.GroupNorm(NORM_GROUPS, EMBEDDING_DIM),
@@ -94,6 +95,7 @@ class UNet(nn.Module):
         prediction = self.output_conv(h)
         assert prediction.shape == z.shape, (prediction.shape, z.shape)
 
+        # return prediction
         return prediction + z
 
 
@@ -115,10 +117,12 @@ class ResnetBlock(nn.Module):
         )
         if in_channels != out_channels:
             self.shortcut_conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
-    
 
-    def cond_proj(self):
-        return self.zero_init(nn.Linear(EMBEDDING_DIM, self.out_channels))
+        if condition_dim is not None:
+            self.cond_proj = zero_init(nn.Linear(condition_dim, out_channels))
+        else:
+            self.cond_proj = None
+
 
     def forward(self, x, condition):
         h = self.net1(x)
