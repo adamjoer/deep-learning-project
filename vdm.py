@@ -1,6 +1,7 @@
-from torch import nn, tensor, sigmoid, sqrt, Tensor, randn_like, rand
+import numpy as np
 import torch
 import torch.nn.functional as F
+from torch import Tensor, nn, rand, randn_like, sigmoid, sqrt, tensor
 
 GAMMA_MIN = -13.3
 GAMMA_MAX = 5.0
@@ -24,11 +25,8 @@ class VDM(nn.Module):
         return sqrt(alpha2), sqrt(sigma2)
 
     def sample_times(self, batch_size):
-        # if self.cfg.antithetic_time_sampling:
-        #     t0 = np.random.uniform(0, 1 / batch_size)
-        #     times = torch.arange(t0, 1.0, 1.0 / batch_size, device=self.device)
-        # else:
-        times = rand(batch_size)
+        t0 = np.random.uniform(0, 1 / batch_size)
+        times = np.arange(t0, 1.0, 1.0 / batch_size)
         return times
 
     def q_sample(self, x0: Tensor, t: Tensor, noise: Tensor | None = None):
@@ -42,7 +40,13 @@ class VDM(nn.Module):
         with torch.enable_grad():  # Need gradient to compute loss even when evaluating
             gamma_t = self.gamma(t)
 
-        gamma_t_padded = gamma_t.view(gamma_t.shape + (1,) * (x0.ndim - gamma_t.ndim))
+        # Assert that gamma_t has shape (B, 1, 1, 1) for broadcasting
+
+        def unsqueeze_right(x, num_dims=1):
+            """Unsqueezes the last `num_dims` dimensions of `x`."""
+            return x.view(x.shape + (1,) * num_dims)
+
+        gamma_t_padded = unsqueeze_right(gamma_t, x0.ndim - gamma_t.ndim)
 
         mean = x0 * sqrt(sigmoid(-gamma_t_padded))  # x * alpha_t
         scale = sqrt(sigmoid(gamma_t_padded))  # sigma_t
@@ -60,8 +64,17 @@ class VDM(nn.Module):
         batch: (B, C, H, W), assumed in [-1, 1]
         noise: optional noise tensor, (B, C, H, W)
         """
+
+        # def maybe_unpack_batch(batch):
+        #     if isinstance(batch, (tuple, list)) and len(batch) == 2:
+        #         return batch
+        #     else:
+        #         return batch, None
+
+        # x, label = maybe_unpack_batch(batch)
+
         # 1. sample times
-        t = self.sample_times(batch)
+        t = self.sample_times(batch.shape[0])
 
         # 2. forward noising
         z_t, eps, gamma_t = self.q_sample(batch, t, noise=noise)

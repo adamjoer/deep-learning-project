@@ -1,17 +1,18 @@
-from accelerate import Accelerator
+# from accelerate import Accelerator
+import torch
+from torch import Tensor, nn
+from torch.utils.data import DataLoader
 from torchvision import transforms
 from torchvision.datasets import CIFAR10
-from torch.utils.data import DataLoader
-from vdm import VDM
-import torch
-from torch import nn, Tensor
+
 from unet import UNet
+from vdm import VDM
 
 BATCH_SIZE = 128
 TRAIN_NUM_STEPS = 10_000_000
 NUM_WORKERS = 4
 LR = 2e-4
-# EPOCHS = 2
+EPOCHS = 1
 
 
 def get_cifar10_dataset(root="data", train=False, download=False):
@@ -51,16 +52,18 @@ def main():
 
     opt = torch.optim.AdamW(vdm.parameters(), lr=LR)
 
-    for step in range(TRAIN_NUM_STEPS):
-        data = next(train_dl)
-        opt.zero_grad()
-        loss = vdm(data)
-        loss.backward()
+    for epoch in range(EPOCHS):
+        for step, (data, label) in enumerate(train_dl):
+            print(data.shape)
+            opt.zero_grad()
+            loss = vdm(data)
+            loss.backward()
+            opt.step()
 
-        if step % 100 == 0:
-            print(f"[step {step}] loss = {loss.item():.4f}")
+            if step % 100 == 0:
+                print(f"[step {step}] loss = {loss.item():.4f}")
 
-        if step == 500:     # stop early for testing
+            if step == 500:  # stop early for testing
                 break
 
 

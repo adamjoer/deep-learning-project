@@ -1,0 +1,22 @@
+{
+    "jupyter.interactiveWindow.textEditor.executeSelection": true,
+    "jupyter.interactiveWindow.creationMode": "single",
+    "interactiveWindow.executeWithShiftEnter": true,
+    "workbench.editorAssociations": {
+        "file:/**/*.csv": "jupyter-data-wrangler"
+    },
+    "dataWrangler.panels.displayOnTabFocus": false,
+    "[python]": {
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true,
+        "editor.defaultFormatter": "ms-python.black-formatter",
+        "editor.codeActionsOnSave": {
+            "source.organizeImports": "explicit"
+        }
+    },
+    "files.insertFinalNewline": true,
+    "editor.formatOnSave": true,
+    "editor.rulers": [120],
+    "black-formatter.args": ["--line-length=120"],
+    "isort.args": ["--profile", "black"]
+}

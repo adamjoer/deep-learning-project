@@ -17,6 +17,7 @@ GAMMA_MIN = 13.3
 GAMMA_MAX = 5
 N_BLOCKS = 32
 
+
 # Create U-net model
 class UNet(nn.Module):
     def __init__(self):
@@ -27,8 +28,8 @@ class UNet(nn.Module):
             norm_groups=NORM_GROUPS,
         )
         resnet_parameters = dict(
-            ch_in=EMBEDDING_DIM,
-            ch_out=EMBEDDING_DIM,
+            in_channels=EMBEDDING_DIM,
+            out_channels=EMBEDDING_DIM,
             condition_dim=4 * EMBEDDING_DIM,
             norm_num_groups=NORM_GROUPS,
         )
@@ -45,7 +46,7 @@ class UNet(nn.Module):
         self.down_blocks = nn.ModuleList(
             UpDownBlock(
                 resnet_block=ResnetBlock(**resnet_parameters),
-                attention_block=AttentionBlock(**attention_parameters) if ATTENTION_EVERYWHERE else None
+                attention_block=AttentionBlock(**attention_parameters) if ATTENTION_EVERYWHERE else None,
             )
             for _ in range(N_BLOCKS)
         )
@@ -54,7 +55,7 @@ class UNet(nn.Module):
         self.mid_attn_block = AttentionBlock(**attention_parameters)
         self.mid_resnet_block_2 = ResnetBlock(**resnet_parameters)
 
-        resnet_parameters["ch_in"] *= 2  # double input channels due to skip connections
+        resnet_parameters["in_channels"] *= 2  # double input channels due to skip connections
         self.up_blocks = nn.ModuleList(
             UpDownBlock(
                 resnet_block=ResnetBlock(**resnet_parameters),
@@ -67,7 +68,6 @@ class UNet(nn.Module):
             nn.SiLU(),
             zero_init(nn.Conv2d(EMBEDDING_DIM, INPUT_CHANNELS, kernel_size=3, padding=1)),
         )
-
 
     def forward(self, z, g_t):
         g_t = g_t.expand(z.shape[0])
@@ -82,7 +82,7 @@ class UNet(nn.Module):
         for down_block in self.down_blocks:
             skip_connections.append(h)
             h = down_block(h, condition)
-        
+
         skip_connections.append(h)
         h = self.mid_resnet_block_1(h, condition)
         h = self.mid_attn_block(h)
@@ -108,12 +108,12 @@ class ResnetBlock(nn.Module):
         self.net1 = nn.Sequential(
             nn.GroupNorm(norm_num_groups, in_channels),
             nn.SiLU(),
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
         )
         self.net2 = nn.Sequential(
             nn.GroupNorm(norm_num_groups, out_channels),
-            nn.SiLU(), 
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
+            nn.SiLU(),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
         )
         if in_channels != out_channels:
             self.shortcut_conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
@@ -123,13 +123,11 @@ class ResnetBlock(nn.Module):
         else:
             self.cond_proj = None
 
-
     def forward(self, x, condition):
         h = self.net1(x)
-        if condition is not None:
-            assert condition.shape == (x.shape[0], self.condition_dim)
+        if self.cond_proj is not None:
             condition = self.cond_proj(condition)
-            condition = condition[:,:, None, None]
+            condition = condition[:, :, None, None]
             h = h + condition
 
         h = self.net2(h)
@@ -231,10 +229,12 @@ def get_timestep_embedding(
     emb = timesteps.to(dtype)[:, None] * inv_timescales[None, :]  # (T, D/2)
     return torch.cat([emb.sin(), emb.cos()], dim=1)  # (T, D)
 
-def zero_init(module:nn.Module) -> nn.Module:
+
+def zero_init(module: nn.Module) -> nn.Module:
     for p in module.parameters():
         nn.init.zeros_(p.data)
     return module
+
 
 class UpDownBlock(nn.Module):
     def __init__(self, resnet_block: ResnetBlock, attention_block: Optional[AttentionBlock] = None):
