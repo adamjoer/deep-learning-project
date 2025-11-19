@@ -8,12 +8,13 @@ GAMMA_MAX = 5.0
 
 
 class VDM(nn.Module):
-    def __init__(self, model, image_shape):
+    def __init__(self, model, image_shape, device=None):
         super().__init__()
         self.model = model
         self.image_shape = image_shape
         self.vocab_size = 256
         self.gamma = FixedLinearSchedule(GAMMA_MIN, GAMMA_MAX)
+        self.device = device
 
     def alpha_sigma(self, t: Tensor):
         """
@@ -26,7 +27,7 @@ class VDM(nn.Module):
 
     def sample_times(self, batch_size):
         t0 = np.random.uniform(0, 1 / batch_size)
-        times = np.arange(t0, 1.0, 1.0 / batch_size)
+        times = torch.arange(t0, 1.0, 1.0 / batch_size, device=self.device)
         return times
 
     def q_sample(self, x0: Tensor, t: Tensor, noise: Tensor | None = None):
@@ -39,8 +40,6 @@ class VDM(nn.Module):
         """
         with torch.enable_grad():  # Need gradient to compute loss even when evaluating
             gamma_t = self.gamma(t)
-
-        # Assert that gamma_t has shape (B, 1, 1, 1) for broadcasting
 
         def unsqueeze_right(x, num_dims=1):
             """Unsqueezes the last `num_dims` dimensions of `x`."""
@@ -70,8 +69,6 @@ class VDM(nn.Module):
         #         return batch
         #     else:
         #         return batch, None
-
-        # x, label = maybe_unpack_batch(batch)
 
         # 1. sample times
         t = self.sample_times(batch.shape[0])

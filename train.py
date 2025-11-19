@@ -48,15 +48,14 @@ def main():
     )
 
     unet = UNet()
-    vdm = VDM(unet, image_shape=train_set[0][0].shape).to(device)
+    vdm = VDM(unet, image_shape=train_set[0][0].shape, device=device).to(device)
 
     opt = torch.optim.AdamW(vdm.parameters(), lr=LR)
 
     for epoch in range(EPOCHS):
         for step, (data, label) in enumerate(train_dl):
-            print(data.shape)
             opt.zero_grad()
-            loss = vdm(data)
+            loss = vdm(data.to(device))
             loss.backward()
             opt.step()
 
