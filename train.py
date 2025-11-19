@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import Path
 
 import torch
-from torch import Tensor, nn
+import wandb
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from torchvision.datasets import CIFAR10
@@ -47,11 +47,25 @@ def save_checkpoint(step: int, vdm: VDM, opt: torch.optim.Optimizer):
     torch.save(checkpoint, checkpoint_file)
     tmp_file.unlink(missing_ok=True)  # Delete temp file
 
+    wandb.save(str(checkpoint_file))
+
 
 def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "mps")
     print("Using device:", device)
+
+    wandb.init(
+        project="deep-learning-project",
+        config={
+            "batch_size": BATCH_SIZE,
+            "learning_rate": LR,
+            "num_workers": NUM_WORKERS,
+            "train_num_steps": TRAIN_NUM_STEPS,
+            "save_every": SAVE_EVERY,
+            "device": str(device),
+        },
+    )
 
     # accelerator = Accelerator(split_batches=True)
     train_set = get_cifar10_dataset(train=True, download=False)
@@ -70,6 +84,8 @@ def main():
 
     opt = torch.optim.AdamW(vdm.parameters(), lr=LR)
 
+    wandb.watch(vdm, log="all", log_freq=100)
+
     step = 0
     with tqdm(initial=step, total=TRAIN_NUM_STEPS) as pbar:
         while step < TRAIN_NUM_STEPS:
@@ -78,6 +94,15 @@ def main():
             loss = vdm(data.to(device))
             loss.backward()
             opt.step()
+            wandb.log(
+                {
+                    "train/loss": loss.item(),
+                    "train/step": step,
+                    "lr": opt.param_groups[0]["lr"],
+                },
+                step=step,
+            )
+
             pbar.set_description(f"loss: {loss.item():.4f}")
             step += 1
             if step % 100 == 0:
@@ -85,6 +110,8 @@ def main():
             if step % SAVE_EVERY == 0 and step > 0:
                 save_checkpoint(step, vdm, opt)
             pbar.update()
+
+    wandb.finish()
 
 
 if __name__ == "__main__":
