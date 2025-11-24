@@ -1,5 +1,3 @@
-# from accelerate import Accelerator
-import math
 from datetime import datetime
 from pathlib import Path
 
@@ -9,12 +7,10 @@ from ema_pytorch import EMA
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from torchvision.datasets import CIFAR10
-from torchvision.utils import save_image
 from tqdm import tqdm
 
 import wandb
 from unet import UNet
-from utils import sample_batched
 from vdm import VDM
 
 BATCH_SIZE = 64
@@ -97,13 +93,15 @@ def main():
     if accelerator.is_main_process:
         wandb.watch(vdm, log="all", log_freq=100)
 
-    vdm, optimizer, training_dataloader = accelerator.prepare(vdm, optimizer, training_dataloader)
+    vdm, optimizer, training_dataloader, validation_dataloader = accelerator.prepare(
+        vdm, optimizer, training_dataloader, validation_dataloader
+    )
 
     output_path = Path("./outputs")
-    path = output_path / Path(datetime.now().isoformat())
+    path = output_path / datetime.now().isoformat()
     path.mkdir(exist_ok=True, parents=True)
 
-    checkpoint_file = path / Path("model.pt")
+    checkpoint_file = path / "model.pt"
 
     ema: EMA | None = None
     if accelerator.is_main_process:
@@ -131,31 +129,11 @@ def main():
 
         wandb.save(str(checkpoint_file))
 
-    @torch.no_grad()
-    def eval(epoch):
-        save_checkpoint(epoch)
-        if ema and ema.ema_model:
-            sample_images(ema.ema_model, is_ema=True)
-        sample_images(vdm, is_ema=False)
+    losses: list[float] = []
+    validation_losses: list[float] = []
 
-    def sample_images(model, *, is_ema):
-        train_state = model.training
-        model.eval()
-        samples = sample_batched(
-            accelerator.unwrap_model(model),
-            64,
-            BATCH_SIZE,
-            250,
-            clip_samples=True,
-        )
-        save_path = path / f"sample-{'ema-' if is_ema else ''}{epoch}.png"
-        save_image(samples, str(save_path), nrow=int(math.sqrt(64)))
-        model.train(train_state)
-
-    cumulative_losses: list[float] = []
-
-    vdm.train()
     for epoch in (progress_bar := tqdm(range(EPOCHS), disable=not accelerator.is_main_process)):
+        vdm.train()
         cumulative_loss = 0.0
         for batch in training_dataloader:
             accelerator.clip_grad_norm_(vdm.parameters(), 1.0)
@@ -173,22 +151,41 @@ def main():
 
         accelerator.wait_for_everyone()
 
-        cumulative_loss = cumulative_loss / len(training_dataloader)
-        cumulative_losses.append(cumulative_loss)
+        average_loss = cumulative_loss / len(training_dataloader)
+        losses.append(average_loss)
 
-        progress_bar.set_description(f"loss: {cumulative_loss:.4f}")
         if accelerator.is_main_process:
             wandb.log(
                 {
-                    "train/loss": cumulative_loss,
+                    "train/loss": average_loss,
                     "train/epoch": epoch,
                     "lr": optimizer.param_groups[0]["lr"],
                 },
                 step=epoch,
             )
 
+            save_checkpoint(epoch)
+
+        vdm.eval()
+        cumulative_validation_loss = 0.0
+        for batch in validation_dataloader:
+            validation_loss = vdm(batch[0])
+            cumulative_validation_loss += validation_loss.item()
+
+        accelerator.wait_for_everyone()
+
+        average_validation_loss = cumulative_validation_loss / len(validation_dataloader)
+        validation_losses.append(average_validation_loss)
         if accelerator.is_main_process:
-            eval(epoch)
+            wandb.log(
+                {
+                    "validation/loss": average_validation_loss,
+                    "validation/epoch": epoch,
+                },
+                step=epoch,
+            )
+
+        progress_bar.set_description(f"loss: {average_loss:.4f}, validation_loss: {average_validation_loss:.4f}")
 
     wandb.finish()
 
@@ -196,8 +193,8 @@ def main():
     if accelerator.is_main_process:
         import pandas as pd
 
-        df = pd.DataFrame({"epoch": list(range(EPOCHS)), "cumulative_loss": cumulative_losses})
-        df.to_csv("cumulative_losses.csv", index=False)
+        df = pd.DataFrame({"epoch": list(range(EPOCHS)), "loss": losses, "validation_loss": validation_losses})
+        df.to_csv(path / "losses.csv", index=False)
 
 
 if __name__ == "__main__":
