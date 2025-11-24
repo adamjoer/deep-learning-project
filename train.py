@@ -1,4 +1,5 @@
 # from accelerate import Accelerator
+import math
 from datetime import datetime
 from pathlib import Path
 
@@ -8,14 +9,15 @@ from ema_pytorch import EMA
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from torchvision.datasets import CIFAR10
+from torchvision.utils import save_image
 from tqdm import tqdm
 
 import wandb
 from unet import UNet
+from utils import sample_batched
 from vdm import VDM
 
 BATCH_SIZE = 64
-SAVE_EVERY = 1
 NUM_WORKERS = 4
 LR = 1e-4
 EPOCHS = 10
@@ -54,7 +56,6 @@ def main():
                 "learning_rate": LR,
                 "num_workers": NUM_WORKERS,
                 "epochs": EPOCHS,
-                "save_every": SAVE_EVERY,
                 "device": str(device),
             },
         )
@@ -70,25 +71,38 @@ def main():
         num_workers=NUM_WORKERS,
         drop_last=True,
     )
+    validation_dataloader = DataLoader(
+        validation_set,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=NUM_WORKERS,
+        drop_last=False,
+    )
 
     if accelerator.is_main_process:
-        print(f"Loaded batches of size: {training_dataloader.batch_size}")
-        print(f"Number of batches: {len(training_dataloader)}")
+        print(f"Training dataset size: {len(train_set)}")
+        print(f"Validation dataset size: {len(validation_set)}")
+        print(f"Training dataloader size: {len(training_dataloader)}")
+        print(f"Validation dataloader size: {len(validation_dataloader)}")
         print(f"Shape: {train_set[0][0].shape}")
+        # print(f"Loaded batches of size: {training_dataloader.batch_size}")
+        # print(f"Number of batches: {len(training_dataloader)}")
+        # print(f"Shape: {train_set[0][0].shape}")
 
     unet = UNet()
     vdm = VDM(unet, image_shape=train_set[0][0].shape, device=device)
 
     optimizer = torch.optim.AdamW(vdm.parameters(), lr=LR, betas=(0.9, 0.99), weight_decay=0.01, eps=1e-8)
 
-    training_dataloader = training_dataloader
-
     if accelerator.is_main_process:
         wandb.watch(vdm, log="all", log_freq=100)
 
     vdm, optimizer, training_dataloader = accelerator.prepare(vdm, optimizer, training_dataloader)
 
-    checkpoint_file = Path("model.pt")
+    output_path = Path("./outputs")
+    path = output_path / Path(datetime.now().isoformat())
+
+    checkpoint_file = path / Path("model.pt")
 
     ema: EMA | None = None
     if accelerator.is_main_process:
@@ -98,7 +112,8 @@ def main():
             update_every=EMA_UPDATE_EVERY,
             power=EMA_POWER,
         )
-        ema.ema_model.eval()
+        if ema.ema_model and isinstance(ema.ema_model, torch.nn.Module):
+            ema.ema_model.eval()
 
     def save_checkpoint(epoch):
         tmp_file = checkpoint_file.with_suffix(f".tmp.{datetime.now().isoformat()}.pt")
@@ -114,6 +129,27 @@ def main():
         tmp_file.unlink(missing_ok=True)  # Delete temp file
 
         wandb.save(str(checkpoint_file))
+
+    @torch.no_grad()
+    def eval(epoch):
+        save_checkpoint(epoch)
+        if ema and ema.ema_model:
+            sample_images(ema.ema_model, is_ema=True)
+        sample_images(vdm, is_ema=False)
+
+    def sample_images(model, *, is_ema):
+        train_state = model.training
+        model.eval()
+        samples = sample_batched(
+            accelerator.unwrap_model(model),
+            64,
+            BATCH_SIZE,
+            250,
+            clip_samples=True,
+        )
+        save_path = path / f"sample-{'ema-' if is_ema else ''}{epoch}.png"
+        save_image(samples, str(save_path), nrow=int(math.sqrt(64)))
+        model.train(train_state)
 
     cumulative_losses: list[float] = []
 
@@ -150,11 +186,8 @@ def main():
                 step=epoch,
             )
 
-        # TODO: Validate on validation set
-
         if accelerator.is_main_process:
-            if epoch % SAVE_EVERY == 0 and epoch > 0:
-                save_checkpoint(epoch)
+            eval(epoch)
 
     wandb.finish()
 
