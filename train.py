@@ -101,6 +101,7 @@ def main():
 
     output_path = Path("./outputs")
     path = output_path / Path(datetime.now().isoformat())
+    path.mkdir(exist_ok=True, parents=True)
 
     checkpoint_file = path / Path("model.pt")
 
