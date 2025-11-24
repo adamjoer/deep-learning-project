@@ -4,3 +4,4 @@ numpy==2.3.5
 jupyter==1.1.1
 wandb==0.23.0
 accelerate==1.11.0
+pandas==2.3.3

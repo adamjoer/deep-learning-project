@@ -3,23 +3,22 @@ from datetime import datetime
 from pathlib import Path
 
 import torch
-
-import wandb
+from accelerate import Accelerator
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from torchvision.datasets import CIFAR10
 from tqdm import tqdm
 
+import wandb
 from unet import UNet
 from vdm import VDM
 
-from accelerate import Accelerator
-
-BATCH_SIZE = 128
-TRAIN_NUM_STEPS = 10_000_000
-SAVE_EVERY = 10_000
+BATCH_SIZE = 64
+# TRAIN_NUM_STEPS = 10_000_000
+SAVE_EVERY = 1
 NUM_WORKERS = 4
-LR = 2e-4
+LR = 1e-4
+EPOCHS = 10
 
 
 def get_cifar10_dataset(root="data", train=False, download=False):
@@ -31,10 +30,10 @@ def get_cifar10_dataset(root="data", train=False, download=False):
     )
 
 
-def training_step(vdm: VDM, x0: torch.Tensor):
-    x0 = x0.to(next(vdm.parameters()).device)
-    loss = vdm(x0)
-    return loss
+# def training_step(vdm: VDM, x0: torch.Tensor):
+#     x0 = x0.to(next(vdm.parameters()).device)
+#     loss = vdm(x0)
+#     return loss
 
 
 def cycle(dl):
@@ -57,7 +56,7 @@ def main():
                 "batch_size": BATCH_SIZE,
                 "learning_rate": LR,
                 "num_workers": NUM_WORKERS,
-                "train_num_steps": TRAIN_NUM_STEPS,
+                "epochs": EPOCHS,
                 "save_every": SAVE_EVERY,
                 "device": str(device),
             },
@@ -75,6 +74,11 @@ def main():
         drop_last=True,
     )
 
+    if accelerator.is_main_process:
+        print(f"Loaded batches of size: {training_dataloader.batch_size}")
+        print(f"Number of batches: {len(training_dataloader)}")
+        print(f"Shape: {train_set[0][0].shape}")
+
     unet = UNet()
     vdm = VDM(unet, image_shape=train_set[0][0].shape, device=device)
 
@@ -89,16 +93,16 @@ def main():
 
     vdm, optimizer, training_dataloader = accelerator.prepare(vdm, optimizer, training_dataloader)
 
-    step = 0
+    # step = 0
 
     checkpoint_file = Path("model.pt")
 
-    def save_checkpoint():
+    def save_checkpoint(epoch):
         tmp_file = checkpoint_file.with_suffix(f".tmp.{datetime.now().isoformat()}.pt")
         if checkpoint_file.exists():
             checkpoint_file.rename(tmp_file)  # Rename old checkpoint to temp file
         checkpoint = {
-            "step": step,
+            "step": epoch,
             "model": accelerator.get_state_dict(vdm),
             "opt": optimizer.state_dict(),
         }
@@ -107,34 +111,79 @@ def main():
 
         wandb.save(str(checkpoint_file))
 
-    train_dl_iter = cycle(training_dataloader)
-    with tqdm(initial=step, total=TRAIN_NUM_STEPS, disable=not accelerator.is_main_process) as pbar:
-        while step < TRAIN_NUM_STEPS:
-            (data, label) = next(train_dl_iter)
+    # train_dl_iter = cycle(training_dataloader)
+    # with tqdm(initial=step, total=TRAIN_NUM_STEPS, disable=not accelerator.is_main_process) as pbar:
+    #     while step < TRAIN_NUM_STEPS:
+    #         (data, label) = next(train_dl_iter)
+    #         optimizer.zero_grad()
+    #         loss = vdm(data)
+    #         accelerator.backward(loss)
+    #         optimizer.step()
+    #         wandb.log(
+    #             {
+    #                 "train/loss": loss.item(),
+    #                 "train/step": step,
+    #                 "lr": optimizer.param_groups[0]["lr"],
+    #             },
+    #             step=step,
+    #         )
+
+    #         pbar.set_description(f"loss: {loss.item():.4f}")
+    #         step += 1
+    #         accelerator.wait_for_everyone()
+    #         if accelerator.is_main_process:
+    #             if step % 100 == 0:
+    #                 print(f"[step {step}] loss = {loss.item():.4f}")
+    #             if step % SAVE_EVERY == 0 and step > 0:
+    #                 save_checkpoint()
+    #         pbar.update()
+
+    cumulative_losses: list[float] = []
+
+    vdm.train()
+    for epoch in (progress_bar := tqdm(range(EPOCHS), disable=not accelerator.is_main_process)):
+        cumulative_loss = 0.0
+        for batch in training_dataloader:
+            accelerator.clip_grad_norm_(vdm.parameters(), 1.0)
+
             optimizer.zero_grad()
-            loss = vdm(data)
+
+            loss = vdm(batch[0])
             accelerator.backward(loss)
+
             optimizer.step()
+            cumulative_loss += loss.item()
+
+        accelerator.wait_for_everyone()
+
+        cumulative_loss = cumulative_loss / len(training_dataloader)
+        cumulative_losses.append(cumulative_loss)
+
+        progress_bar.set_description(f"loss: {cumulative_loss:.4f}")
+        if accelerator.is_main_process:
             wandb.log(
                 {
-                    "train/loss": loss.item(),
-                    "train/step": step,
+                    "train/loss": cumulative_loss,
+                    "train/epoch": epoch,
                     "lr": optimizer.param_groups[0]["lr"],
                 },
-                step=step,
+                step=epoch,
             )
 
-            pbar.set_description(f"loss: {loss.item():.4f}")
-            step += 1
-            accelerator.wait_for_everyone()
-            if accelerator.is_main_process:
-                if step % 100 == 0:
-                    print(f"[step {step}] loss = {loss.item():.4f}")
-                if step % SAVE_EVERY == 0 and step > 0:
-                    save_checkpoint()
-            pbar.update()
+        # TODO: Validate on validation set
+
+        if accelerator.is_main_process:
+            if epoch % SAVE_EVERY == 0 and epoch > 0:
+                save_checkpoint(epoch)
 
     wandb.finish()
+
+    # Save cumulative losses to a CSV file
+    if accelerator.is_main_process:
+        import pandas as pd
+
+        df = pd.DataFrame({"epoch": list(range(EPOCHS)), "cumulative_loss": cumulative_losses})
+        df.to_csv("cumulative_losses.csv", index=False)
 
 
 if __name__ == "__main__":
