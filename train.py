@@ -14,7 +14,6 @@ from unet import UNet
 from vdm import VDM
 
 BATCH_SIZE = 64
-# TRAIN_NUM_STEPS = 10_000_000
 SAVE_EVERY = 1
 NUM_WORKERS = 4
 LR = 1e-4
@@ -28,12 +27,6 @@ def get_cifar10_dataset(root="data", train=False, download=False):
         transform=transforms.Compose([transforms.ToTensor()]),
         download=download,
     )
-
-
-# def training_step(vdm: VDM, x0: torch.Tensor):
-#     x0 = x0.to(next(vdm.parameters()).device)
-#     loss = vdm(x0)
-#     return loss
 
 
 def cycle(dl):
@@ -86,14 +79,10 @@ def main():
 
     training_dataloader = training_dataloader
 
-    # opt = torch.optim.AdamW(vdm.parameters(), lr=LR)
-
     if accelerator.is_main_process:
         wandb.watch(vdm, log="all", log_freq=100)
 
     vdm, optimizer, training_dataloader = accelerator.prepare(vdm, optimizer, training_dataloader)
-
-    # step = 0
 
     checkpoint_file = Path("model.pt")
 
@@ -110,33 +99,6 @@ def main():
         tmp_file.unlink(missing_ok=True)  # Delete temp file
 
         wandb.save(str(checkpoint_file))
-
-    # train_dl_iter = cycle(training_dataloader)
-    # with tqdm(initial=step, total=TRAIN_NUM_STEPS, disable=not accelerator.is_main_process) as pbar:
-    #     while step < TRAIN_NUM_STEPS:
-    #         (data, label) = next(train_dl_iter)
-    #         optimizer.zero_grad()
-    #         loss = vdm(data)
-    #         accelerator.backward(loss)
-    #         optimizer.step()
-    #         wandb.log(
-    #             {
-    #                 "train/loss": loss.item(),
-    #                 "train/step": step,
-    #                 "lr": optimizer.param_groups[0]["lr"],
-    #             },
-    #             step=step,
-    #         )
-
-    #         pbar.set_description(f"loss: {loss.item():.4f}")
-    #         step += 1
-    #         accelerator.wait_for_everyone()
-    #         if accelerator.is_main_process:
-    #             if step % 100 == 0:
-    #                 print(f"[step {step}] loss = {loss.item():.4f}")
-    #             if step % SAVE_EVERY == 0 and step > 0:
-    #                 save_checkpoint()
-    #         pbar.update()
 
     cumulative_losses: list[float] = []
 
