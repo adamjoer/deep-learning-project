@@ -4,6 +4,7 @@ from pathlib import Path
 
 import torch
 from accelerate import Accelerator
+from ema_pytorch import EMA
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from torchvision.datasets import CIFAR10
@@ -18,6 +19,9 @@ SAVE_EVERY = 1
 NUM_WORKERS = 4
 LR = 1e-4
 EPOCHS = 10
+EMA_DECAY = 0.9999
+EMA_UPDATE_EVERY = 1
+EMA_POWER = 3 / 4  # 0.999 at 10k, 0.9997 at 50k, 0.9999 at 200k
 
 
 def get_cifar10_dataset(root="data", train=False, download=False):
@@ -75,7 +79,7 @@ def main():
     unet = UNet()
     vdm = VDM(unet, image_shape=train_set[0][0].shape, device=device)
 
-    optimizer = torch.optim.AdamW(vdm.parameters(), lr=LR)
+    optimizer = torch.optim.AdamW(vdm.parameters(), lr=LR, betas=(0.9, 0.99), weight_decay=0.01, eps=1e-8)
 
     training_dataloader = training_dataloader
 
@@ -86,6 +90,16 @@ def main():
 
     checkpoint_file = Path("model.pt")
 
+    ema: EMA | None = None
+    if accelerator.is_main_process:
+        ema = EMA(
+            vdm.to(accelerator.device),
+            beta=EMA_DECAY,
+            update_every=EMA_UPDATE_EVERY,
+            power=EMA_POWER,
+        )
+        ema.ema_model.eval()
+
     def save_checkpoint(epoch):
         tmp_file = checkpoint_file.with_suffix(f".tmp.{datetime.now().isoformat()}.pt")
         if checkpoint_file.exists():
@@ -94,6 +108,7 @@ def main():
             "step": epoch,
             "model": accelerator.get_state_dict(vdm),
             "opt": optimizer.state_dict(),
+            "ema": ema.state_dict() if ema is not None else None,
         }
         torch.save(checkpoint, checkpoint_file)
         tmp_file.unlink(missing_ok=True)  # Delete temp file
@@ -115,6 +130,9 @@ def main():
 
             optimizer.step()
             cumulative_loss += loss.item()
+
+            if accelerator.is_main_process and ema:
+                ema.update()
 
         accelerator.wait_for_everyone()
 
