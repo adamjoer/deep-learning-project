@@ -137,71 +137,134 @@ def main():
 
     losses: list[float] = []
     validation_losses: list[float] = []
+    bpd_list: list[float] = []
+    validation_bpd_list: list[float] = []
+    bpd_recon_list: list[float] = []
+    bpd_klz_list: list[float] = []
+    bpd_diff_list: list[float] = []
 
     for epoch in (progress_bar := tqdm(range(EPOCHS), disable=not accelerator.is_main_process)):
         vdm.train()
         cumulative_loss = 0.0
+        cumulative_bpd = 0.0
+        cumulative_bpd_recon = 0.0
+        cumulative_bpd_klz = 0.0
+        cumulative_bpd_diff = 0.0
+
         for batch in (
             train_progress_bar := tqdm(
                 training_dataloader, position=1, leave=False, disable=not accelerator.is_main_process
             )
         ):
-            accelerator.clip_grad_norm_(vdm.parameters(), 1.0)
-
             optimizer.zero_grad()
 
-            loss = vdm(batch[0])
+            loss, bpd, bpd_components = vdm(batch[0])
             accelerator.backward(loss)
 
             accelerator.clip_grad_norm_(vdm.parameters(), 1.0)
             optimizer.step()
             cumulative_loss += loss.item()
+            cumulative_bpd += bpd.item()
+            cumulative_bpd_recon += bpd_components["bpd_recon"]
+            cumulative_bpd_klz += bpd_components["bpd_klz"]
+            cumulative_bpd_diff += bpd_components["bpd_diff"]
 
             if accelerator.is_main_process:
-                train_progress_bar.set_description(f"loss: {loss.item():.4f}")
+                train_progress_bar.set_description(
+                    f"loss: {loss.item():.4f}, bpd: {bpd.item():.4f} "
+                    f"(R:{bpd_components['bpd_recon']:.3f} K:{bpd_components['bpd_klz']:.3f} D:{bpd_components['bpd_diff']:.3f})"
+                )
                 if ema:
                     ema.update()
 
         accelerator.wait_for_everyone()
 
         average_loss = cumulative_loss / len(training_dataloader)
+        average_bpd = cumulative_bpd / len(training_dataloader)
+        average_bpd_recon = cumulative_bpd_recon / len(training_dataloader)
+        average_bpd_klz = cumulative_bpd_klz / len(training_dataloader)
+        average_bpd_diff = cumulative_bpd_diff / len(training_dataloader)
+
         losses.append(average_loss)
+        bpd_list.append(average_bpd)
+        bpd_recon_list.append(average_bpd_recon)
+        bpd_klz_list.append(average_bpd_klz)
+        bpd_diff_list.append(average_bpd_diff)
 
         if accelerator.is_main_process:
             wandb.log(
                 {
                     "train/loss": average_loss,
+                    "train/bpd": average_bpd,
+                    "train/bpd_recon": average_bpd_recon,
+                    "train/bpd_klz": average_bpd_klz,
+                    "train/bpd_diff": average_bpd_diff,
                     "train/epoch": epoch,
                     "lr": optimizer.param_groups[0]["lr"],
                 },
                 step=epoch,
             )
 
+            save_checkpoint(epoch)
+
+        # Validation
         average_validation_loss = 0.0
+        average_validation_bpd = 0.0
         if epoch % VALIDATE_EVERY_EPOCH == 0:
             vdm.eval()
             cumulative_validation_loss = 0.0
-            for batch in validation_dataloader:
-                validation_loss = vdm(batch[0])
-                cumulative_validation_loss += validation_loss.item()
+            cumulative_validation_bpd = 0.0
+
+            with torch.no_grad():
+                for batch in validation_dataloader:
+                    validation_loss, validation_bpd, _ = vdm(batch[0])
+                    cumulative_validation_loss += validation_loss.item()
+                    cumulative_validation_bpd += validation_bpd.item()
 
             accelerator.wait_for_everyone()
 
             average_validation_loss = cumulative_validation_loss / len(validation_dataloader)
+            average_validation_bpd = cumulative_validation_bpd / len(validation_dataloader)
             validation_losses.append(average_validation_loss)
+            validation_bpd_list.append(average_validation_bpd)
+
             if accelerator.is_main_process:
                 wandb.log(
                     {
                         "validation/loss": average_validation_loss,
+                        "validation/bpd": average_validation_bpd,
                         "validation/epoch": epoch,
                     },
                     step=epoch,
                 )
+        else:
+            validation_losses.append(validation_losses[-1] if validation_losses else 0.0)
+            validation_bpd_list.append(validation_losses[-1] if validation_losses else 0.0)
 
-        progress_bar.set_description(f"loss: {average_loss:.4f}, validation_loss: {average_validation_loss:.4f}")
+        progress_bar.set_description(
+            f"loss: {average_loss:.4f}, val_loss: {average_validation_loss:.4f}, "
+            f"bpd: {average_bpd:.4f}, val_bpd: {average_validation_bpd:.4f}"
+        )
 
-    save_checkpoint(EPOCHS - 1)
     wandb.finish()
+
+    # Save cumulative losses and BPD to a CSV file
+    if accelerator.is_main_process:
+        import pandas as pd
+
+        df = pd.DataFrame(
+            {
+                "epoch": list(range(EPOCHS)),
+                "loss": losses,
+                "validation_loss": validation_losses,
+                "bpd": bpd_list,
+                "validation_bpd": validation_bpd_list,
+                "bpd_recon": bpd_recon_list,
+                "bpd_klz": bpd_klz_list,
+                "bpd_diff": bpd_diff_list,
+            }
+        )
+        df.to_csv(path / "losses.csv", index=False)
 
 
 if __name__ == "__main__":
