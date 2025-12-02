@@ -2,6 +2,7 @@ from typing import Optional
 import torch
 from torch import nn, einsum, softmax
 import numpy as np
+import math
 
 ## VARIABLES
 EMBEDDING_DIM = 128
@@ -16,6 +17,9 @@ ATTENTION_EVERYWHERE = False
 GAMMA_MIN = -13.3
 GAMMA_MAX = 5
 N_BLOCKS = 32
+
+USE_FOURIER_FEATURES = True
+NUM_FOURIER_FEATURES = 7
 
 
 # Create U-net model
@@ -41,6 +45,11 @@ class UNet(nn.Module):
             nn.SiLU(),
         )
         total_input_ch = INPUT_CHANNELS
+        # print(total_input_ch)
+        # if fourier features, concat sin and cos features
+        if USE_FOURIER_FEATURES:
+            total_input_ch = INPUT_CHANNELS * (1 + 2 * NUM_FOURIER_FEATURES)
+
         self.input_conv = nn.Conv2d(total_input_ch, EMBEDDING_DIM, kernel_size=3, padding=1)
 
         self.down_blocks = nn.ModuleList(
@@ -77,7 +86,9 @@ class UNet(nn.Module):
 
         condition = self.embed_conditioning(t_embedding)
 
-        h = self.input_conv(z)
+        z_in = fourier_encode(z, num_frequencies=NUM_FOURIER_FEATURES)
+
+        h = self.input_conv(z_in)
         skip_connections = []
         for down_block in self.down_blocks:
             skip_connections.append(h)
@@ -247,3 +258,28 @@ class UpDownBlock(nn.Module):
         if self.attention_block is not None:
             x = self.attention_block(x)
         return x
+
+
+def fourier_encode(x: torch.Tensor, num_frequencies: int = 7) -> torch.Tensor:
+    B, C, H, W = x.shape
+    device = x.device
+    dtype = x.dtype
+
+    # Frequencies 2^n for n = 0..num_freqs    (shape: [F])
+    n = torch.arange(num_frequencies, device=device, dtype=dtype)
+    freqs = (2.0**n) * (2.0 * math.pi)  # [F]
+
+    # Reshape for broadcasting:
+    # x : (B, C, H, W) → (B, C, F, H, W)
+    # freqs : (F,) → (1, 1, F, 1, 1)
+    angles = x.unsqueeze(2) * freqs.view(1, 1, -1, 1, 1)
+
+    # Compute sin/cos → (B, C, F, H, W)
+    sin_feats = torch.sin(angles)
+    cos_feats = torch.cos(angles)
+
+    # Flatten frequencies into channels
+    sin_feats = sin_feats.reshape(B, C * (num_frequencies), H, W)
+    cos_feats = cos_feats.reshape(B, C * (num_frequencies), H, W)
+
+    return torch.cat([x, sin_feats, cos_feats], dim=1)
