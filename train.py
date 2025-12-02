@@ -42,7 +42,6 @@ def cycle(dl):
 
 
 def main():
-    os.environ["CUDA_VISIBLE_DEVICES"] = "1"
     accelerator = Accelerator(split_batches=True)
 
     device = accelerator.device

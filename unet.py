@@ -218,7 +218,6 @@ class AttentionBlock(nn.Module):
         return self.layers(x) + x
 
 
-#### WHAT IT DO?
 def get_timestep_embedding(
     timesteps,
     embedding_dim: int,
@@ -226,19 +225,19 @@ def get_timestep_embedding(
     max_timescale=10_000,
     min_timescale=1,
 ):
-    # Adapted from tensor2tensor and VDM codebase.
+    # Adapted from addtt/variational-diffusion-models
     assert timesteps.ndim == 1
     assert embedding_dim % 2 == 0
-    timesteps *= 1000.0  # In DDPM the time step is in [0, 1000], here [0, 1]
+    timesteps *= 1000.0
     num_timescales = embedding_dim // 2
-    inv_timescales = torch.logspace(  # or exp(-linspace(log(min), log(max), n))
+    inv_timescales = torch.logspace(
         -np.log10(min_timescale),
         -np.log10(max_timescale),
         num_timescales,
         device=timesteps.device,
     )
-    emb = timesteps.to(dtype)[:, None] * inv_timescales[None, :]  # (T, D/2)
-    return torch.cat([emb.sin(), emb.cos()], dim=1)  # (T, D)
+    emb = timesteps.to(dtype)[:, None] * inv_timescales[None, :]
+    return torch.cat([emb.sin(), emb.cos()], dim=1)
 
 
 def zero_init(module: nn.Module) -> nn.Module:
@@ -265,20 +264,14 @@ def fourier_encode(x: torch.Tensor, num_frequencies: int = 7) -> torch.Tensor:
     device = x.device
     dtype = x.dtype
 
-    # Frequencies 2^n for n = 0..num_freqs    (shape: [F])
     n = torch.arange(num_frequencies, device=device, dtype=dtype)
-    freqs = (2.0**n) * (2.0 * math.pi)  # [F]
+    freqs = (2.0**n) * (2.0 * math.pi)
 
-    # Reshape for broadcasting:
-    # x : (B, C, H, W) → (B, C, F, H, W)
-    # freqs : (F,) → (1, 1, F, 1, 1)
     angles = x.unsqueeze(2) * freqs.view(1, 1, -1, 1, 1)
 
-    # Compute sin/cos → (B, C, F, H, W)
     sin_feats = torch.sin(angles)
     cos_feats = torch.cos(angles)
 
-    # Flatten frequencies into channels
     sin_feats = sin_feats.reshape(B, C * (num_frequencies), H, W)
     cos_feats = cos_feats.reshape(B, C * (num_frequencies), H, W)
 
