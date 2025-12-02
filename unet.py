@@ -270,11 +270,11 @@ def fourier_encode(x: torch.Tensor, num_frequencies: int = 7) -> torch.Tensor:
     freqs = (2.0**n) * (2.0 * math.pi)  # [F]
 
     # Reshape for broadcasting:
-    # x : (B, C, H, W) → (B, C, F, H, W)
-    # freqs : (F,) → (1, 1, F, 1, 1)
+    # x : (B, C, H, W) -> (B, C, F, H, W)
+    # freqs : (F,) -> (1, 1, F, 1, 1)
     angles = x.unsqueeze(2) * freqs.view(1, 1, -1, 1, 1)
 
-    # Compute sin/cos → (B, C, F, H, W)
+    # Compute sin/cos -> (B, C, F, H, W)
     sin_feats = torch.sin(angles)
     cos_feats = torch.cos(angles)
 
