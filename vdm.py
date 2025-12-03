@@ -2,6 +2,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn, rand, randn_like, sigmoid, sqrt, tensor
+from torch.special import expm1
+from tqdm import trange
 
 GAMMA_MIN = -13.3
 GAMMA_MAX = 5.0
@@ -239,6 +241,75 @@ class VDM(nn.Module):
         }
 
         return total_loss, bpd_total, bpd_components
+
+    @torch.no_grad()
+    def sample_p_s_t(self, z, t, s, clip_samples):
+        """Samples from p(z_s | z_t, x). Used for standard ancestral sampling."""
+        gamma_t = self.gamma(t)
+        gamma_s = self.gamma(s)
+        c = -expm1(gamma_s - gamma_t)
+        alpha_t = sqrt(sigmoid(-gamma_t))
+        alpha_s = sqrt(sigmoid(-gamma_s))
+        sigma_t = sqrt(sigmoid(gamma_t))
+        sigma_s = sqrt(sigmoid(gamma_s))
+
+        pred_noise = self.model(z, gamma_t)
+        if clip_samples:
+            x_start = (z - sigma_t * pred_noise) / alpha_t
+            x_start.clamp_(-1.0, 1.0)
+            mean = alpha_s * (z * (1 - c) / alpha_t + c * x_start)
+        else:
+            mean = alpha_s / alpha_t * (z - c * sigma_t * pred_noise)
+        scale = sigma_s * sqrt(c)
+        return mean + scale * torch.randn_like(z)
+
+    def log_probs_x_z0(self, x=None, z_0=None):
+        """Computes log p(x | z_0) for all possible values of x.
+
+        Compute p(x_i | z_0i), with i = pixel index, for all possible values of x_i in
+        the vocabulary. We approximate this with q(z_0i | x_i). Unnormalized logits are:
+            -1/2 SNR_0 (z_0 / alpha_0 - k)^2
+        where k takes all possible x_i values. Logits are then normalized to logprobs.
+
+        The method returns a tensor of shape (B, C, H, W, vocab_size) containing, for
+        each pixel, the log probabilities for all `vocab_size` possible values of that
+        pixel. The output sums to 1 over the last dimension.
+
+        The method accepts either `x` or `z_0` as input. If `z_0` is given, it is used
+        directly. If `x` is given, a sample z_0 is drawn from q(z_0 | x). It's more
+        efficient to pass `x` directly, if available.
+
+        Args:
+            x: Input image, shape (B, C, H, W).
+            z_0: z_0 to be decoded, shape (B, C, H, W).
+
+        Returns:
+            log_probs: Log probabilities of shape (B, C, H, W, vocab_size).
+        """
+        gamma_0 = self.gamma(torch.tensor([0.0], device=self.device))
+        if x is None and z_0 is not None:
+            z_0_rescaled = z_0 / sqrt(sigmoid(-gamma_0))  # z_0 / alpha_0
+        elif z_0 is None and x is not None:
+            # Equal to z_0/alpha_0 with z_0 sampled from q(z_0 | x)
+            z_0_rescaled = x + torch.exp(0.5 * gamma_0) * torch.randn_like(x)  # (B, C, H, W)
+        else:
+            raise ValueError("Must provide either x or z_0, not both.")
+        z_0_rescaled = z_0_rescaled.unsqueeze(-1)  # (B, C, H, W, 1)
+        x_lim = 1 - 1 / self.vocab_size
+        x_values = torch.linspace(-x_lim, x_lim, self.vocab_size, device=self.device)
+        logits = -0.5 * torch.exp(-gamma_0) * (z_0_rescaled - x_values) ** 2  # broadcast x
+        log_probs = torch.log_softmax(logits, dim=-1)  # (B, C, H, W, vocab_size)
+        return log_probs
+
+    @torch.no_grad()
+    def sample(self, batch_size, n_sample_steps, clip_samples):
+        z = torch.randn((batch_size, *self.image_shape), device=self.device)
+        steps = torch.linspace(1.0, 0.0, n_sample_steps + 1, device=self.device)
+        for i in trange(n_sample_steps, desc="sampling"):
+            z = self.sample_p_s_t(z, steps[i], steps[i + 1], clip_samples)
+        logprobs = self.log_probs_x_z0(z_0=z)  # (B, C, H, W, vocab_size)
+        x = torch.argmax(logprobs, dim=-1)  # (B, C, H, W)
+        return x.float() / (self.vocab_size - 1)  # normalize to [0, 1]
 
 
 class FixedLinearSchedule(nn.Module):
