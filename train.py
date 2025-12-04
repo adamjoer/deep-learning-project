@@ -34,11 +34,34 @@ def get_cifar10_dataset(root="data", train=False, download=False):
     )
 
 
-def cycle(dl):
-    # We don't use itertools.cycle because it caches the entire iterator.
-    while True:
-        for data in dl:
-            yield data
+@torch.no_grad()
+def log_samples_to_wandb(vdm: VDM, validation_dataloader: DataLoader, epoch: int, num_samples=8, n_sample_steps=250):
+    vdm.eval()
+
+    real_batch = next(iter(validation_dataloader))[0][:num_samples]
+
+    # Reconstructions
+    f = vdm.encode(real_batch)
+
+    g_0 = vdm.gamma(torch.tensor(0.0, device=real_batch.device))
+    var_0 = torch.sigmoid(g_0)
+    eps_0 = torch.randn_like(f)
+    z_0 = torch.sqrt(1.0 - var_0) * f + torch.sqrt(var_0) * eps_0
+
+    log_probs = vdm.log_probs_x_z0(z_0=z_0)
+    reconstructed = torch.argmax(log_probs, dim=-1).float() / (vdm.vocab_size - 1)
+
+    # Generated
+    generated = vdm.sample(num_samples, n_sample_steps, clip_samples=True)
+
+    wandb.log(
+        {
+            "samples/original": [wandb.Image(img) for img in real_batch],
+            "samples/reconstructed": [wandb.Image(img) for img in reconstructed],
+            "samples/generated": [wandb.Image(img) for img in generated],
+        },
+        step=epoch,
+    )
 
 
 def main():
@@ -134,15 +157,7 @@ def main():
 
         wandb.save(str(checkpoint_file))
 
-    losses: list[float] = []
-    validation_losses: list[float] = []
-    bpd_list: list[float] = []
-    validation_bpd_list: list[float] = []
-    bpd_recon_list: list[float] = []
-    bpd_klz_list: list[float] = []
-    bpd_diff_list: list[float] = []
-
-    for epoch in (progress_bar := tqdm(range(EPOCHS), disable=not accelerator.is_main_process)):
+    for epoch in tqdm(range(EPOCHS), disable=not accelerator.is_main_process):
         vdm.train()
         cumulative_loss = 0.0
         cumulative_bpd = 0.0
@@ -184,12 +199,6 @@ def main():
         average_bpd_klz = cumulative_bpd_klz / len(training_dataloader)
         average_bpd_diff = cumulative_bpd_diff / len(training_dataloader)
 
-        losses.append(average_loss)
-        bpd_list.append(average_bpd)
-        bpd_recon_list.append(average_bpd_recon)
-        bpd_klz_list.append(average_bpd_klz)
-        bpd_diff_list.append(average_bpd_diff)
-
         if accelerator.is_main_process:
             wandb.log(
                 {
@@ -207,8 +216,6 @@ def main():
             save_checkpoint(epoch)
 
         # Validation
-        average_validation_loss = 0.0
-        average_validation_bpd = 0.0
         if epoch % VALIDATE_EVERY_EPOCH == 0:
             vdm.eval()
             cumulative_validation_loss = 0.0
@@ -224,8 +231,6 @@ def main():
 
             average_validation_loss = cumulative_validation_loss / len(validation_dataloader)
             average_validation_bpd = cumulative_validation_bpd / len(validation_dataloader)
-            validation_losses.append(average_validation_loss)
-            validation_bpd_list.append(average_validation_bpd)
 
             if accelerator.is_main_process:
                 wandb.log(
@@ -236,34 +241,13 @@ def main():
                     },
                     step=epoch,
                 )
-        else:
-            validation_losses.append(validation_losses[-1] if validation_losses else 0.0)
-            validation_bpd_list.append(validation_losses[-1] if validation_losses else 0.0)
-
-        progress_bar.set_description(
-            f"loss: {average_loss:.4f}, val_loss: {average_validation_loss:.4f}, "
-            f"bpd: {average_bpd:.4f}, val_bpd: {average_validation_bpd:.4f}"
-        )
+                log_samples_to_wandb(
+                    ema.ema_model if ema else vdm,
+                    validation_dataloader,
+                    epoch,
+                )
 
     wandb.finish()
-
-    # Save cumulative losses and BPD to a CSV file
-    if accelerator.is_main_process:
-        import pandas as pd
-
-        df = pd.DataFrame(
-            {
-                "epoch": list(range(EPOCHS)),
-                "loss": losses,
-                "validation_loss": validation_losses,
-                "bpd": bpd_list,
-                "validation_bpd": validation_bpd_list,
-                "bpd_recon": bpd_recon_list,
-                "bpd_klz": bpd_klz_list,
-                "bpd_diff": bpd_diff_list,
-            }
-        )
-        df.to_csv(path / "losses.csv", index=False)
 
 
 if __name__ == "__main__":
