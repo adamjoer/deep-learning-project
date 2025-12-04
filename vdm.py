@@ -102,14 +102,12 @@ class VDM(nn.Module):
         kl = 0.5 * torch.sum(mean1_sqr + var_1_tensor - torch.log(var_1_tensor) - 1.0, dim=[1, 2, 3])
         return kl
 
-    def compute_diffusion_loss(self, eps: Tensor, eps_pred: Tensor, g_t: Tensor, t: Tensor) -> Tensor:
+    def compute_diffusion_loss(self, eps: Tensor, eps_pred: Tensor) -> Tensor:
         """
         Compute the diffusion loss with proper VDM weighting.
 
         eps: true noise (B, C, H, W)
         eps_pred: predicted noise (B, C, H, W)
-        g_t: gamma at time t (B,)
-        t: timesteps (B,)
         returns: weighted diffusion loss per sample (B,)
         """
         # Compute MSE per sample
@@ -197,7 +195,7 @@ class VDM(nn.Module):
         else:
             eps_0 = noise
         z_0 = sqrt(1.0 - var_0) * f + sqrt(var_0) * eps_0
-        z_0_rescaled = f + torch.exp(0.5 * g_0) * eps_0  # = z_0 / sqrt(1 - var_0)
+        z_0_rescaled = z_0 / sqrt(1.0 - var_0)  # = z_0 / alpha_0
 
         loss_recon = self.compute_reconstruction_loss(x, z_0_rescaled, g_0)  # (B,)
 
@@ -215,7 +213,7 @@ class VDM(nn.Module):
         eps_pred = self.model(z_t, gamma_t)
 
         # Compute weighted diffusion loss
-        loss_diff = self.compute_diffusion_loss(eps, eps_pred, gamma_t, t)  # (B,)
+        loss_diff = self.compute_diffusion_loss(eps, eps_pred)  # (B,)
 
         # 5. COMPUTE TOTAL LOSS AND BPD
         # Total loss in nats (sum of three components)
