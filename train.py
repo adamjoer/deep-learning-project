@@ -1,4 +1,3 @@
-import os
 from datetime import datetime
 from pathlib import Path
 
@@ -36,6 +35,7 @@ def get_cifar10_dataset(root="data", train=False, download=False):
 
 import torch
 from torch.utils.data import DataLoader
+
 import wandb
 from vdm import VDM
 
@@ -58,7 +58,7 @@ def log_samples_to_wandb(
     if n_recon_steps is None:
         n_recon_steps = n_sample_steps
 
-    reconstructed = vdm.decode_x_indices(real_batch, recon_t_start, n_recon_steps)
+    reconstructed = vdm.reconstruct(real_batch, recon_t_start, n_recon_steps)
 
     # Generated
     generated = vdm.sample(num_samples, n_sample_steps, clip_samples=True)
@@ -250,11 +250,7 @@ def main():
                     },
                     step=epoch,
                 )
-                log_samples_to_wandb(
-                    ema.ema_model if ema else vdm,
-                    validation_dataloader,
-                    epoch,
-                )
+                log_samples_to_wandb(ema.ema_model if ema else vdm, validation_dataloader, epoch, recon_t_start=0.6)
 
     wandb.finish()
 

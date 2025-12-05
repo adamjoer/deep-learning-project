@@ -210,7 +210,7 @@ class VDM(nn.Module):
         return x.float() / (self.vocab_size - 1)
 
     @torch.no_grad()
-    def decode_x_indices(self, real_batch: Tensor, t_start: float, n_steps: int) -> Tensor:
+    def reconstruct(self, real_batch: Tensor, t_start: float, n_steps: int) -> Tensor:
         f = self.encode(real_batch)
 
         batch_size = f.shape[0]
@@ -219,7 +219,7 @@ class VDM(nn.Module):
 
         steps = torch.linspace(t_start, 0.0, n_steps + 1, device=self.device)
         z = z_t
-        for i in range(n_steps):
+        for i in trange(n_steps, desc="reconstruction"):
             z = self.sample_p_s_t(z, steps[i], steps[i + 1], clip_samples=True)
 
         log_probs = self.log_probs_x_z0(z_0=z)
