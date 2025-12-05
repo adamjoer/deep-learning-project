@@ -33,13 +33,6 @@ def get_cifar10_dataset(root="data", train=False, download=False):
     )
 
 
-import torch
-from torch.utils.data import DataLoader
-
-import wandb
-from vdm import VDM
-
-
 @torch.no_grad()
 def log_samples_to_wandb(
     vdm: VDM,
