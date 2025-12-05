@@ -34,22 +34,31 @@ def get_cifar10_dataset(root="data", train=False, download=False):
     )
 
 
+import torch
+from torch.utils.data import DataLoader
+import wandb
+from vdm import VDM
+
+
 @torch.no_grad()
-def log_samples_to_wandb(vdm: VDM, validation_dataloader: DataLoader, epoch: int, num_samples=8, n_sample_steps=250):
+def log_samples_to_wandb(
+    vdm: VDM,
+    validation_dataloader: DataLoader,
+    epoch: int,
+    num_samples: int = 8,
+    n_sample_steps: int = 250,
+    recon_t_start: float = 0.5,
+    n_recon_steps: int | None = None,
+):
     vdm.eval()
 
     real_batch = next(iter(validation_dataloader))[0][:num_samples]
 
     # Reconstructions
-    f = vdm.encode(real_batch)
+    if n_recon_steps is None:
+        n_recon_steps = n_sample_steps
 
-    g_0 = vdm.gamma(torch.tensor(0.0, device=real_batch.device))
-    var_0 = torch.sigmoid(g_0)
-    eps_0 = torch.randn_like(f)
-    z_0 = torch.sqrt(1.0 - var_0) * f + torch.sqrt(var_0) * eps_0
-
-    log_probs = vdm.log_probs_x_z0(z_0=z_0)
-    reconstructed = torch.argmax(log_probs, dim=-1).float() / (vdm.vocab_size - 1)
+    reconstructed = vdm.decode_x_indices(real_batch, recon_t_start, n_recon_steps)
 
     # Generated
     generated = vdm.sample(num_samples, n_sample_steps, clip_samples=True)
